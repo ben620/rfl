@@ -1,4 +1,5 @@
 //inspired by https://github.com/yosh-matsuda/field-reflection
+//and by http://www.purecpp.cn/detail?id=2437
 #include <iostream>
 #include <string_view>
 #include <source_location>
@@ -16,14 +17,52 @@ struct Wrapper
     const static Wrapper fake;
 };
 
+template <typename T, std::size_t N>
+struct MakePtrTupleHelper
+{
+    static consteval auto Make() {}
+};
 
 
 template <typename T>
-constexpr auto MakePtrTuple(T&& t)
+struct MakePtrTupleHelper<T, 0>
+{
+    static consteval auto Make() { return std::tie(); }
+};
+
+#define MAKE_PTR_ANY(N, ...) \
+template <typename T> \
+struct MakePtrTupleHelper<T, N>\
+{\
+    static consteval auto Make(T &&t)\
+    {\
+        auto& [__VARARGS__] = t;\
+        auto tup = std::tie(__VARARGS__);\
+        auto lambda = [](auto&... refs) { return std::make_tuple(&refs...); };\
+        return std::apply(lambda, tup);\
+    }\
+}
+
+MAKE_PTR_ANY(1, _0);
+
+#undef MAKE_PTR_ANY
+
+
+template <typename T>
+consteval auto MakePtrTuple(T&& t)
 {
     auto& [f0] = t;
     return std::tuple(&f0);
 }
+
+template <typename T>
+consteval auto MakeRefTuple(T&& t)
+{
+    auto& [f0] = t;
+    return std::tuple(f0);
+}
+
+#define MAKE_PTR_TUPLE(...)
 
 template <typename T, std::size_t N>
 consteval auto GetMemPtr() noexcept
