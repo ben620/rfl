@@ -1,5 +1,6 @@
 //inspired by https://github.com/yosh-matsuda/field-reflection
 //and by http://www.purecpp.cn/detail?id=2437
+//and by https://towardsdev.com/counting-the-number-of-fields-in-an-aggregate-in-c-20-c81aecfd725c
 #include <iostream>
 #include <string_view>
 #include <source_location>
