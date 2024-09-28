@@ -105,11 +105,39 @@ consteval std::string_view GetFieldName()
     return realName.substr(begin, last - begin);
 }
 
+struct AnyType
+{
+    template <class T>
+    operator T() {}
+};
 
+
+template <typename T, typename ...Args>
+std::size_t CountMemberImp(Args... args)
+{
+    if constexpr (requires{T{ args..., {AnyType{}} }; })
+    {
+        return CountMemberImp<T, Args..., AnyType>(args..., { AnyType{} });
+    }
+    else if constexpr (requires{T{ args..., AnyType{} }; })
+    {
+        return CountMemberImp<T, Args..., AnyType>(args..., AnyType{});
+    }
+    else
+    {
+        return sizeof ...(Args) - 1;
+    }
+}
+
+template <typename T>
+std::size_t MemberCount()
+{
+    return CountMemberImp<T>(AnyType{});
+}
 
 int main()
 {
-    
+    std::cout << MemberCount<Test>() << std::endl;
     std::cout << GetFieldName<Test, GetMemPtr<Test, 0>()>();
     return 0;
 }
