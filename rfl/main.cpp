@@ -9,14 +9,6 @@
 #include <functional>
 #include <concepts>
 
-struct Test
-{
-    char a[2];
-    char p;
-    int* d;
-};
-
-
 
 struct AnyType
 {
@@ -45,27 +37,36 @@ struct Wrapper
 };
 
 template <typename T, std::size_t N>
-struct MakePtrTupleHelper
+struct MakeTupleHelper
 {
-    static consteval auto Make(T &&) {}
+    static consteval auto MakePtr(T&&) {}
+    static consteval auto MakeRef(T&&) {}
 };
 
 
 template <typename T>
-struct MakePtrTupleHelper<T, 0>
+struct MakeTupleHelper<T, 0>
 {
-    static consteval auto Make(T&&) { return std::tie(); }
+    static consteval auto MakePtr(T&&) { return std::tie(); }
+    static consteval auto MakeRef(T&&) { return std::tie(); }
 };
 
 #define MAKE_PTR_ANY(N, ...) \
 template <typename T> \
-struct MakePtrTupleHelper<T, N>\
+struct MakeTupleHelper<T, N>\
 {\
-    static consteval auto Make(T &&t)\
+    static consteval auto MakePtr(T &&t)\
     {\
         auto& [__VA_ARGS__] = t;\
         auto tup = std::tie(__VA_ARGS__);\
         auto lambda = [](auto&... refs) { return std::make_tuple(&refs...); };\
+        return std::apply(lambda, tup);\
+    }\
+    static consteval auto MakeRef(T && t)\
+    {\
+        auto& [__VA_ARGS__] = t;\
+        auto tup = std::tie(__VA_ARGS__);\
+        auto lambda = [](auto&... refs) { return std::make_tuple(refs...); };\
         return std::apply(lambda, tup);\
     }\
 }
@@ -291,7 +292,7 @@ MAKE_PTR_ANY(100, _0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _1
 template <typename T, std::size_t N>
 consteval auto GetMemPtr() noexcept
 {
-    return std::get<N>(MakePtrTupleHelper<T, MemberCount<T>()>::Make(std::move(Wrapper<T>::fake.value)));
+    return std::get<N>(MakeTupleHelper<T, MemberCount<T>()>::MakePtr(std::move(Wrapper<T>::fake.value)));
 }
 
 
@@ -344,8 +345,41 @@ consteval std::array<std::string_view, N> MemberNames()
     return MakeNameSequence<T>(std::make_index_sequence<N>());
 }
 
+
+template <class T, std::size_t I, std::size_t N= MemberCount<T>()>
+using MemberType = std::remove_cvref_t<decltype(std::get<I>(MakeTupleHelper<T, N>::MakeRef(std::move(Wrapper<T>::fake.value))))>;
+
+template <class T, std::size_t I, std::size_t N = MemberCount<T>()>
+auto& MemberValue(const T& t)
+{
+    return std::get<I>(MakeTupleHelper<T, N>::MakeRef(t));
+}
+
+struct Base
+{
+    int type;
+    int length;
+};
+
+struct Test
+{
+    Base base;
+    char a[2];
+    int p;
+    int* d;
+};
+
+
+
 int main()
 {
+    Test t;
+    t.p = 1;
+    MemberType<Test, 0> member;
+
+    std::cout << MemberValue<Test, 2, 4>(t);
+    
+#if 0
     struct FD
     {
         void* dummy;
@@ -357,6 +391,6 @@ int main()
     {
         std::cout << name << "\n";
     }
-   
+#endif
     return 0;
 }
