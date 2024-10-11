@@ -1,5 +1,5 @@
 N = 100
-MAX_COL = 32
+MAX_COL = 28
 
 for ii in range(1, N + 1):
     print(f"MAKE_PTR_ANY({ii}", end='')
