@@ -616,8 +616,18 @@ public:
                 ++position_;
                 return true;
             }
-            if (character < 0x20) {
-                return false;
+            const auto kind = byte_class[character];
+            if (kind == 0) {
+                ++position_;
+                continue;
+            }
+            if (kind == 2) {
+                const auto length = utf8_sequence_length(input_, position_);
+                if (length == 0) {
+                    return false;
+                }
+                position_ += length;
+                continue;
             }
             if (character == '\\') {
                 escaped = true;
@@ -627,15 +637,7 @@ public:
                 }
                 continue;
             }
-            if (character >= 0x80) {
-                const auto length = utf8_sequence_length(input_, position_);
-                if (length == 0) {
-                    return false;
-                }
-                position_ += length;
-                continue;
-            }
-            ++position_;
+            return false;
         }
         return false;
     }
