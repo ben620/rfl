@@ -1,13 +1,17 @@
+#include <rfl/format.hpp>
 #include <rfl/meta.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace test_types {
 
@@ -353,6 +357,180 @@ void test_nested_and_empty_aggregates() {
     assert(visited == 0);
 }
 
+void test_json_string_round_trip() {
+    const User source{42, "Ada\nLovelace", true};
+    const auto json = rfl::ToJson(source);
+    assert(json == R"({"id":42,"name":"Ada\nLovelace","active":true})");
+
+    const auto decoded = rfl::FromJson<User>(
+        R"({"active":false,"unknown":[1,null,{}],"name":"Grace \u03bb","id":7})");
+    assert(decoded.id == 7);
+    assert(decoded.name == "Grace \xce\xbb");
+    assert(!decoded.active);
+
+    User output{};
+    assert(rfl::FromJson(json, output));
+    assert(output.id == source.id);
+    assert(output.name == source.name);
+    assert(output.active == source.active);
+    assert(!rfl::FromJson(R"({"id":})", output));
+    assert(!rfl::FromJson(
+        R"({"unknown":"\q123,"id":7,"name":"x","active":true})", output));
+    assert(rfl::ToJson("text") == R"("text")");
+
+    assert(rfl::FromJson(R"({"\u006ename":"x","name":"y","id":1,"active":true})",
+                         output));
+    assert(output.name == "y");
+    assert(output.id == 1);
+
+    assert(rfl::FromJson(R"({"\u006eame":"escaped-key","id":2,"active":false})",
+                         output));
+    assert(output.name == "escaped-key");
+
+    assert(!rfl::FromJson(R"({"unknown":"\u00","id":1})", output));
+
+    std::vector<std::string> strings;
+    assert(rfl::FromJson(R"(["a","b\n","c"])", strings));
+    assert(strings.size() == 3);
+    assert(strings[1] == "b\n");
+    assert(rfl::FromJson(R"([])", strings));
+    assert(strings.empty());
+}
+
+void test_json_transactional_failure() {
+    User original{7, "Linus", true};
+    User target = original;
+
+    assert(!rfl::FromJson(R"({"id":1,"name":"partial","active":oops})", target));
+    assert(target.id == original.id);
+    assert(target.name == original.name);
+    assert(target.active == original.active);
+
+    User in_place = original;
+    assert(!rfl::FromJsonInPlace(
+        R"({"id":1,"name":"partial","active":oops})", in_place));
+    assert(in_place.id == 1);
+
+    std::vector<int> numbers{1, 2, 3};
+    assert(!rfl::FromJson(R"([4,5,bad])", numbers));
+    assert((numbers == std::vector<int>{1, 2, 3}));
+    assert(rfl::FromJsonInPlace(R"([7,8])", numbers));
+    assert((numbers == std::vector<int>{7, 8}));
+}
+
+void test_json_utf8_validation() {
+    const User valid{1, "\xe4\xbd\xa0\xe5\xa5\xbd", true};
+    const auto json = rfl::ToJson(valid);
+    assert(json.find("\xe4\xbd\xa0\xe5\xa5\xbd") != std::string::npos);
+
+    User decoded{};
+    assert(rfl::FromJson(json, decoded));
+    assert(decoded.name == valid.name);
+
+    bool rejected = false;
+    try {
+        const auto ignored = rfl::ToJson(std::string("\xff\xfe"));
+        (void)ignored;
+    } catch (const std::domain_error&) {
+        rejected = true;
+    }
+    assert(rejected);
+
+    const User lone_continuation{1, std::string("\x80"), true};
+    std::string sink;
+    assert(!rfl::ToJson(lone_continuation, sink));
+    assert(!rfl::JsonSize(lone_continuation));
+
+    assert(!rfl::FromJson("\"\xc3\"", decoded.name));
+    assert(!rfl::FromJson("\"\xed\xa0\x80\"", decoded.name));
+    assert(!rfl::FromJson("\"\xc0\xaf\"", decoded.name));
+    assert(!rfl::FromJson("{\"id\":1,\"name\":\"\xff\"}", decoded));
+}
+
+void test_json_span_overlap() {
+    std::string text = "abcdefghijklmnop";
+    const auto expected = rfl::ToJson(std::string_view(text));
+
+    std::array<char, 64> separate{};
+    const auto result =
+        rfl::ToJson(std::string_view(text), std::span<char>(separate));
+    assert(result.complete());
+    assert(std::string_view(separate.data(), result.written) == expected);
+}
+
+void test_json_nested_and_fixed_buffer() {
+    const Nested source{{2, 4.5}, {1, 2, 3}};
+    const auto expected = rfl::ToJson(source);
+
+    std::array<char, 128> storage{};
+    const auto result = rfl::ToJson(source, std::span<char>(storage));
+    assert(result.complete());
+    assert(std::string_view(storage.data(), result.written) == expected);
+
+    std::array<char, 8> small{};
+    const auto truncated = rfl::ToJson(source, std::span<char>(small));
+    assert(!truncated.complete());
+    assert(truncated.valid);
+    assert(truncated.written == small.size());
+    assert(truncated.required == expected.size());
+
+    const auto decoded = rfl::FromJson<Nested>(expected);
+    assert(decoded.point.x == 2);
+    assert(decoded.point.y == 4.5);
+    assert((decoded.values == std::array<int, 3>{1, 2, 3}));
+
+    const auto size = rfl::JsonSize(source);
+    assert(size && *size == expected.size());
+
+    std::string reused;
+    reused.reserve(256);
+    const auto capacity = reused.capacity();
+    assert(rfl::ToJson(source, reused));
+    assert(reused == expected);
+    assert(reused.capacity() == capacity);
+
+    assert(rfl::ToJson(0.1) == "0.1");
+    assert(rfl::FromJson<double>(rfl::ToJson(0.1)) == 0.1);
+}
+
+void test_json_chunk_sink() {
+    const User source{100, "Grace", false};
+    std::string transmitted;
+    const bool sent = rfl::ToJson<8>(source, [&](std::string_view chunk) {
+        assert(!chunk.empty());
+        assert(chunk.size() <= 8);
+        transmitted.append(chunk);
+        return true;
+    });
+    assert(sent);
+    assert(transmitted == rfl::ToJson(source));
+
+    transmitted.clear();
+    const bool partially_sent = rfl::ToJson<8>(source, [&](std::string_view chunk) {
+        const auto consumed = (std::min)(chunk.size(), std::size_t{3});
+        transmitted.append(chunk.substr(0, consumed));
+        return consumed;
+    });
+    assert(partially_sent);
+    assert(transmitted == rfl::ToJson(source));
+
+    std::size_t calls = 0;
+    const bool stopped = rfl::ToJson<4>(source, [&](std::string_view) {
+        return ++calls < 2;
+    });
+    assert(!stopped);
+    assert(calls == 2);
+
+    transmitted.clear();
+    auto void_sink = [&](std::string_view chunk) { transmitted.append(chunk); };
+    assert(rfl::ToJson<16>(source, void_sink));
+    assert(transmitted == rfl::ToJson(source));
+
+    transmitted.clear();
+    assert(rfl::ToJson<1>(source, void_sink));
+    assert(transmitted == rfl::ToJson(source));
+}
+
 } // namespace test_types
 
 int main() {
@@ -361,4 +539,10 @@ int main() {
     test_types::test_const_access();
     test_types::test_single_inheritance();
     test_types::test_nested_and_empty_aggregates();
+    test_types::test_json_string_round_trip();
+    test_types::test_json_nested_and_fixed_buffer();
+    test_types::test_json_chunk_sink();
+    test_types::test_json_transactional_failure();
+    test_types::test_json_utf8_validation();
+    test_types::test_json_span_overlap();
 }

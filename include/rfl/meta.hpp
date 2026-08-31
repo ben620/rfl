@@ -240,6 +240,26 @@ template <class Owner,
     return object.*specification::pointer;
 }
 
+template <class Info>
+struct plain_member_traits : std::false_type {
+    using owner_type = void;
+    static constexpr std::size_t structural_index = 0;
+};
+
+template <class Owner, std::size_t StructuralIndex, std::size_t FlatIndex>
+struct plain_member_traits<member_info<Owner, StructuralIndex, FlatIndex>>
+    : std::true_type {
+    using owner_type = Owner;
+    static constexpr std::size_t structural_index = StructuralIndex;
+};
+
+template <class T, class... Infos>
+inline constexpr bool tied_traversal_v =
+    sizeof...(Infos) != 0 &&
+    (plain_member_traits<Infos>::value && ...) &&
+    (std::same_as<typename plain_member_traits<Infos>::owner_type,
+                  object_type_t<T>> && ...);
+
 template <class T, class Visitor, class... Infos>
 constexpr void for_each_object_member_impl(
     T& object,
@@ -250,7 +270,39 @@ constexpr void for_each_object_member_impl(
                   Infos,
                   decltype(member_value(Infos{}, object))> && ...)) {
     auto&& callback = visitor;
-    (std::invoke(callback, Infos{}, member_value(Infos{}, object)), ...);
+    if constexpr (tied_traversal_v<T, Infos...>) {
+        auto tied = tie_members(object);
+        (std::invoke(callback,
+                     Infos{},
+                     std::get<plain_member_traits<Infos>::structural_index>(tied)),
+         ...);
+    } else {
+        (std::invoke(callback, Infos{}, member_value(Infos{}, object)), ...);
+    }
+}
+
+template <class T, class Visitor, class... Infos>
+constexpr bool for_each_object_member_while_impl(
+    T& object,
+    Visitor&& visitor,
+    info_sequence<Infos...>)
+    noexcept((std::is_nothrow_invocable_v<
+                  Visitor&,
+                  Infos,
+                  decltype(member_value(Infos{}, object))> && ...)) {
+    auto&& callback = visitor;
+    if constexpr (tied_traversal_v<T, Infos...>) {
+        auto tied = tie_members(object);
+        return (static_cast<bool>(std::invoke(
+                    callback,
+                    Infos{},
+                    std::get<plain_member_traits<Infos>::structural_index>(tied))) &&
+                ...);
+    } else {
+        return (static_cast<bool>(
+                    std::invoke(callback, Infos{}, member_value(Infos{}, object))) &&
+                ...);
+    }
 }
 
 } // namespace detail
@@ -463,6 +515,18 @@ constexpr void for_each_member(T& object, Visitor&& visitor)
         std::forward<Visitor>(visitor),
         nonstatic_data_members_of(reflect<object_type_t<T>>()))) ) {
     detail::for_each_object_member_impl(
+        object,
+        std::forward<Visitor>(visitor),
+        nonstatic_data_members_of(reflect<object_type_t<T>>()));
+}
+
+template <reflectable_type T, class Visitor>
+constexpr bool for_each_member_while(T& object, Visitor&& visitor)
+    noexcept(noexcept(detail::for_each_object_member_while_impl(
+        object,
+        std::forward<Visitor>(visitor),
+        nonstatic_data_members_of(reflect<object_type_t<T>>()))) ) {
+    return detail::for_each_object_member_while_impl(
         object,
         std::forward<Visitor>(visitor),
         nonstatic_data_members_of(reflect<object_type_t<T>>()));
