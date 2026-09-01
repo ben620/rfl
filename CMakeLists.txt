@@ -15,16 +15,23 @@ target_compile_features(rfl INTERFACE cxx_std_20)
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(rfl_tests tests/cppreflect_tests.cpp)
-    target_link_libraries(rfl_tests PRIVATE rfl::rfl)
-    target_compile_options(
-        rfl_tests
-        PRIVATE
-            $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
-            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
-    )
+    foreach(test_name IN ITEMS rfl_tests rfl_bin_tests)
+        if(test_name STREQUAL "rfl_tests")
+            set(test_source tests/cppreflect_tests.cpp)
+        else()
+            set(test_source tests/bin_tests.cpp)
+        endif()
 
-    add_test(NAME rfl_tests COMMAND rfl_tests)
+        add_executable(${test_name} ${test_source})
+        target_link_libraries(${test_name} PRIVATE rfl::rfl)
+        target_compile_options(
+            ${test_name}
+            PRIVATE
+                $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+                $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+        )
+        add_test(NAME ${test_name} COMMAND ${test_name})
+    endforeach()
 endif()
 
 option(RFL_BUILD_BENCHMARKS "Build the rfl JSON benchmarks" ON)
