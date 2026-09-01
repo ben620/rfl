@@ -2,6 +2,12 @@
 
 #include <rfl/meta.hpp>
 
+// JSON serialization built on top of the rfl reflection API.
+//
+// Parts of the writer and sizing design follow the contiguous buffered output
+// approach used by `std::format` implementations: a small local buffer, direct
+// `to_chars` into contiguous space, and bulk flushes to the target.
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -47,7 +53,7 @@ private:
     std::size_t position_;
 };
 
-namespace format_detail {
+namespace json_detail {
 
 template <class>
 inline constexpr bool dependent_false = false;
@@ -1037,12 +1043,12 @@ bool read_json(json_reader& reader, T& value) {
     }
 }
 
-} // namespace format_detail
+} // namespace json_detail
 
 template <class T>
 [[nodiscard]] std::string ToJson(const T& value) {
-    format_detail::small_string_writer<> writer;
-    if (!format_detail::write_json(writer, value)) {
+    json_detail::small_string_writer<> writer;
+    if (!json_detail::write_json(writer, value)) {
         throw std::domain_error("value cannot be represented as JSON");
     }
     return std::move(writer).finish();
@@ -1051,35 +1057,35 @@ template <class T>
 template <class T>
 [[nodiscard]] bool ToJson(const T& value, std::string& output) {
     output.clear();
-    format_detail::string_writer writer{output};
-    return format_detail::write_json(writer, value);
+    json_detail::string_writer writer{output};
+    return json_detail::write_json(writer, value);
 }
 
 template <class T>
 [[nodiscard]] json_write_result ToJson(const T& value, std::span<char> output) noexcept {
-    format_detail::span_writer writer{output};
-    const bool valid = format_detail::write_json(writer, value);
+    json_detail::span_writer writer{output};
+    const bool valid = json_detail::write_json(writer, value);
     return {writer.written, writer.required, valid};
 }
 
 template <class T>
 [[nodiscard]] std::optional<std::size_t> JsonSize(const T& value) noexcept {
-    format_detail::span_writer writer{std::span<char>{}};
-    if (!format_detail::write_json(writer, value)) {
+    json_detail::span_writer writer{std::span<char>{}};
+    if (!json_detail::write_json(writer, value)) {
         return std::nullopt;
     }
     return writer.required;
 }
 
 template <std::size_t BufferSize = 4096, class T, class Sink>
-    requires format_detail::json_sink<std::remove_reference_t<Sink>>
+    requires json_detail::json_sink<std::remove_reference_t<Sink>>
 [[nodiscard]] bool ToJson(const T& value, Sink&& sink) {
     static_assert(BufferSize > 0, "The JSON sink buffer must not be empty.");
     auto& callback = sink;
     std::array<char, BufferSize> buffer;
-    format_detail::buffered_sink_writer writer{
-        std::span<char>(buffer), format_detail::sink_ref(callback)};
-    return format_detail::write_json(writer, value) && writer.flush();
+    json_detail::buffered_sink_writer writer{
+        std::span<char>(buffer), json_detail::sink_ref(callback)};
+    return json_detail::write_json(writer, value) && writer.flush();
 }
 
 // Parses into a temporary and only commits on success, so `value` is left
@@ -1087,8 +1093,8 @@ template <std::size_t BufferSize = 4096, class T, class Sink>
 template <class T>
 [[nodiscard]] bool FromJson(std::string_view input, T& value) {
     T parsed{};
-    format_detail::json_reader reader(input);
-    if (!format_detail::read_json(reader, parsed) || !reader.finished()) {
+    json_detail::json_reader reader(input);
+    if (!json_detail::read_json(reader, parsed) || !reader.finished()) {
         return false;
     }
     value = std::move(parsed);
@@ -1099,15 +1105,15 @@ template <class T>
 // `value` may be partially modified when parsing fails.
 template <class T>
 [[nodiscard]] bool FromJsonInPlace(std::string_view input, T& value) {
-    format_detail::json_reader reader(input);
-    return format_detail::read_json(reader, value) && reader.finished();
+    json_detail::json_reader reader(input);
+    return json_detail::read_json(reader, value) && reader.finished();
 }
 
 template <class T>
 [[nodiscard]] T FromJson(std::string_view input) {
     T value{};
-    format_detail::json_reader reader(input);
-    if (!format_detail::read_json(reader, value) || !reader.finished()) {
+    json_detail::json_reader reader(input);
+    if (!json_detail::read_json(reader, value) || !reader.finished()) {
         throw json_error(reader.position());
     }
     return value;
