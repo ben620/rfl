@@ -48,7 +48,63 @@ RFL_META_REGISTER_SINGLE_BASE(test_types::Go, test_types::Header, target);
 
 namespace test_types {
 
-struct SixteenMembers {
+struct WideDerived : public Header {
+    int r00;
+    int r01;
+    int r02;
+    int r03;
+    int r04;
+    int r05;
+    int r06;
+    int r07;
+    int r08;
+    int r09;
+    int r10;
+    int r11;
+    int r12;
+    int r13;
+    int r14;
+    int r15;
+    int r16;
+    int r17;
+    int r18;
+    int r19;
+    int r20;
+    int r21;
+    int r22;
+    int r23;
+    int r24;
+    int r25;
+    int r26;
+    int r27;
+    int r28;
+    int r29;
+    int r30;
+    int r31;
+    int r32;
+    int r33;
+    int r34;
+    int r35;
+    int r36;
+    int r37;
+    int r38;
+    int r39;
+    int r40;
+    int r41;
+    int r42;
+    int r43;
+    int r44;
+    int r45;
+};
+
+} // namespace test_types
+
+RFL_META_REGISTER_SINGLE_BASE(test_types::WideDerived, test_types::Header,
+                              r00, r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32, r33, r34, r35, r36, r37, r38, r39, r40, r41, r42, r43, r44, r45);
+
+namespace test_types {
+
+struct FortyEightMembers {
     int m00;
     int m01;
     int m02;
@@ -65,6 +121,38 @@ struct SixteenMembers {
     int m13;
     int m14;
     int m15;
+    int m16;
+    int m17;
+    int m18;
+    int m19;
+    int m20;
+    int m21;
+    int m22;
+    int m23;
+    int m24;
+    int m25;
+    int m26;
+    int m27;
+    int m28;
+    int m29;
+    int m30;
+    int m31;
+    int m32;
+    int m33;
+    int m34;
+    int m35;
+    int m36;
+    int m37;
+    int m38;
+    int m39;
+    int m40;
+    int m41;
+    int m42;
+    int m43;
+    int m44;
+    int m45;
+    int m46;
+    int m47;
 };
 
 struct NotAggregate {
@@ -134,17 +222,17 @@ static_assert(rfl::meta::size_of(user_type) == sizeof(User));
 static_assert(rfl::meta::alignment_of(user_type) == alignof(User));
 static_assert(rfl::meta::member_count_of(user_type) == 3);
 
-constexpr auto sixteen_type = rfl::meta::reflect<SixteenMembers>();
-constexpr auto sixteen_members =
-    rfl::meta::nonstatic_data_members_of(sixteen_type);
-static_assert(rfl::meta::member_count_of(sixteen_type) ==
+constexpr auto forty_eight_type = rfl::meta::reflect<FortyEightMembers>();
+constexpr auto forty_eight_members =
+    rfl::meta::nonstatic_data_members_of(forty_eight_type);
+static_assert(rfl::meta::member_count_of(forty_eight_type) ==
               rfl::meta::max_supported_members);
-static_assert(sixteen_members.size() == 16);
-static_assert(rfl::meta::identifier_of(rfl::meta::get<0>(sixteen_members)) ==
+static_assert(forty_eight_members.size() == 48);
+static_assert(rfl::meta::identifier_of(rfl::meta::get<0>(forty_eight_members)) ==
               "m00");
-static_assert(rfl::meta::identifier_of(rfl::meta::get<15>(sixteen_members)) ==
-              "m15");
-static_assert(rfl::meta::type_of(rfl::meta::get<15>(sixteen_members)) ==
+static_assert(rfl::meta::identifier_of(rfl::meta::get<47>(forty_eight_members)) ==
+              "m47");
+static_assert(rfl::meta::type_of(rfl::meta::get<47>(forty_eight_members)) ==
               rfl::meta::reflect<int>());
 
 static_assert(user_members.size() == 3);
@@ -178,6 +266,17 @@ static_assert(rfl::meta::type_of(active_member) == rfl::meta::reflect<bool>());
 static_assert(rfl::meta::size_of(id_member) == sizeof(std::uint64_t));
 static_assert(rfl::meta::size_of(name_member) == sizeof(std::string));
 static_assert(rfl::meta::alignment_of(active_member) == alignof(bool));
+
+constexpr auto wide_derived_members =
+    rfl::meta::nonstatic_data_members_of(rfl::meta::reflect<WideDerived>());
+static_assert(wide_derived_members.size() == rfl::meta::max_supported_members);
+static_assert(rfl::meta::identifier_of(rfl::meta::get<0>(wide_derived_members)) ==
+              "size");
+static_assert(rfl::meta::identifier_of(rfl::meta::get<2>(wide_derived_members)) ==
+              "r00");
+static_assert(rfl::meta::identifier_of(rfl::meta::get<47>(wide_derived_members)) ==
+              "r45");
+static_assert(rfl::meta::index_of(rfl::meta::get<47>(wide_derived_members)) == 47);
 
 constexpr auto go_type = rfl::meta::reflect<Go>();
 constexpr auto go_members = rfl::meta::nonstatic_data_members_of(go_type);

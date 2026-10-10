@@ -36,7 +36,7 @@ build\Release\rfl_benchmarks.exe
 | 名称 | 说明 |
 |---|---|
 | `User` | 3 字段：`uint64_t`、`std::string`、`bool` |
-| `Wide` | 16 个 `int` 字段（达到反射上限） |
+| `Wide` | 16 个 `int` 字段（测试时的反射上限） |
 | `vector<int>[10k]` | 10000 个整数 |
 | `vector<double>[10k]` | 10000 个浮点数 |
 | `vector<string>[5k]` | 5000 个字符串 |
