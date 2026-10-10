@@ -1,0 +1,10 @@
+{
+    // 兜底：即使没有 c_cpp_properties.json（例如单文件打开模式），也用 C++20 解析
+    "C_Cpp.default.cppStandard": "c++20",
+    "C_Cpp.default.cStandard": "c17",
+    "C_Cpp.default.compilerPath": "D:/software/vs26/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe",
+    "C_Cpp.default.intelliSenseMode": "windows-msvc-x64",
+    // IntelliSense 语义着色，保证 consteval/concept 等关键字按关键字配色
+    "C_Cpp.enhancedColorization": "Enabled",
+    "C_Cpp.default.compileCommands": ""
+}

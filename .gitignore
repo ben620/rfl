@@ -1,1 +1,5 @@
 build/
+build-android-arm64/
+build-clang/
+build-win/
+build-clang-ninja/

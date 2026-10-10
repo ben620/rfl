@@ -4,7 +4,9 @@
 
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
@@ -115,7 +117,7 @@ namespace detail {
 
 template <class T>
 consteval std::string_view type_name_impl() noexcept {
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
     constexpr std::string_view signature = __FUNCSIG__;
     constexpr std::string_view prefix = "type_name_impl<";
     constexpr auto prefix_position = signature.find(prefix);
@@ -124,7 +126,7 @@ consteval std::string_view type_name_impl() noexcept {
                   end != std::string_view::npos,
                   "rfl::meta could not parse the MSVC function signature.");
     constexpr auto begin = prefix_position + prefix.size();
-#elif defined(__GNUC__)
+#elif defined(__clang__) || defined(__GNUC__)
     constexpr std::string_view signature = __PRETTY_FUNCTION__;
     constexpr std::string_view prefix = "T = ";
     constexpr auto prefix_position = signature.find(prefix);
@@ -506,6 +508,32 @@ template <class Owner,
     registered_member_info<Owner, DirectIndex, FlatIndex> member,
     Object& object) noexcept {
     return detail::member_value(member, object);
+}
+
+struct member_offset {
+    std::size_t bytes{};
+    std::size_t bits{};
+
+    constexpr bool operator==(const member_offset&) const noexcept = default;
+};
+
+// C++20 cannot compute arbitrary member address differences in constant evaluation.
+// With an object, offsets are relative to that complete object, including base fields.
+template <info_type Member, class Object>
+    requires requires(Member member, Object& object) { get(member, object); }
+[[nodiscard]] member_offset offset_of(Member member, Object& object) noexcept {
+    const auto begin = reinterpret_cast<std::uintptr_t>(std::addressof(object));
+    const auto field = reinterpret_cast<std::uintptr_t>(
+        std::addressof(get(member, object)));
+    return {static_cast<std::size_t>(field - begin), 0};
+}
+
+template <info_type Member>
+    requires std::default_initializable<typename Member::owner_type>
+[[nodiscard]] member_offset offset_of(Member member)
+    noexcept(std::is_nothrow_default_constructible_v<typename Member::owner_type>) {
+    typename Member::owner_type object{};
+    return offset_of(member, object);
 }
 
 template <reflectable_type T, class Visitor>

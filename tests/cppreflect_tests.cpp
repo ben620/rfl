@@ -336,6 +336,11 @@ void test_single_inheritance() {
                            const int&>);
     assert(rfl::meta::get(go_size_member, constant) == 40);
     assert(rfl::meta::get(go_target_member, constant) == 60);
+    const auto target_offset = reinterpret_cast<std::uintptr_t>(&constant.target) -
+                               reinterpret_cast<std::uintptr_t>(&constant);
+    assert(rfl::meta::offset_of(go_size_member, constant).bytes == 0);
+    assert(rfl::meta::offset_of(go_target_member, constant).bytes == target_offset);
+    assert(rfl::meta::offset_of(go_target_member).bytes == target_offset);
 }
 
 void test_nested_and_empty_aggregates() {

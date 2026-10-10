@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <list>
 #include <span>
 #include <string>
@@ -35,19 +36,154 @@ struct NestedSequence {
     std::array<std::vector<std::uint16_t>, 2> groups;
 };
 
+struct PointerMember {
+    int* pointer;
+};
+
+struct PointerArray {
+    int* pointers[2];
+};
+
+struct DynamicPointerMember {
+    std::vector<PointerMember> entries;
+};
+
+struct FixedArrays {
+    char name[96];
+    int matrix[2][3];
+    Plain entries[2];
+};
+
+struct DynamicArrays {
+    FixedArrays header;
+    std::vector<FixedArrays> entries;
+    std::string labels[2];
+};
+
+enum class AIMsgID : std::uint16_t {
+    PlayerReady = 5,
+    SessionIdentity = 0x401,
+    ProcPath = 25,
+};
+
+enum class SessionIdentityType : std::uint8_t {
+    Unknown,
+    GameClient,
+    MapExplore,
+    Manage,
+    CltDaemon,
+};
+
+#pragma pack(push, 1)
+template <class MsgType, AIMsgID Message>
+struct MsgHeader {
+    AIMsgID message{Message};
+    std::uint32_t length{
+        static_cast<std::uint32_t>(sizeof(MsgType) - sizeof(message) - sizeof(length))};
+
+    bool operator==(const MsgHeader&) const = default;
+};
+
+struct SessionIdentityPacket;
+struct PlayerReadyPacket;
+struct ProcPathPacket;
+
+using SessionIdentityHeader =
+    MsgHeader<SessionIdentityPacket, AIMsgID::SessionIdentity>;
+using PlayerReadyHeader = MsgHeader<PlayerReadyPacket, AIMsgID::PlayerReady>;
+using ProcPathHeader = MsgHeader<ProcPathPacket, AIMsgID::ProcPath>;
+
+struct SessionIdentityBody {
+    std::uint32_t magic{0x41535649};
+    std::uint16_t version{1};
+    SessionIdentityType sessionType{SessionIdentityType::Unknown};
+    std::uint8_t reserved{};
+
+    bool operator==(const SessionIdentityBody&) const = default;
+};
+
+struct SessionIdentityPacket : SessionIdentityHeader {
+    SessionIdentityBody body{};
+
+    bool operator==(const SessionIdentityPacket&) const = default;
+};
+
+struct PlayerReadyBody {
+    std::uint64_t uin{};
+    std::uint32_t processID{};
+
+    bool operator==(const PlayerReadyBody&) const = default;
+};
+
+struct PlayerReadyPacket : PlayerReadyHeader {
+    PlayerReadyBody body{};
+
+    bool operator==(const PlayerReadyPacket&) const = default;
+};
+
+struct FVec3 {
+    float x{};
+    float y{};
+    float z{};
+
+    bool operator==(const FVec3&) const = default;
+};
+#pragma pack(pop)
+
+struct ProcPathPacket : ProcPathHeader {
+    std::vector<FVec3> points;
+
+    bool operator==(const ProcPathPacket&) const = default;
+};
+
 } // namespace binaryTestTypes
+
+RFL_META_REGISTER_SINGLE_BASE(binaryTestTypes::SessionIdentityPacket,
+                              binaryTestTypes::SessionIdentityHeader,
+                              body);
+RFL_META_REGISTER_SINGLE_BASE(binaryTestTypes::PlayerReadyPacket,
+                              binaryTestTypes::PlayerReadyHeader,
+                              body);
+RFL_META_REGISTER_SINGLE_BASE(binaryTestTypes::ProcPathPacket,
+                              binaryTestTypes::ProcPathHeader,
+                              points);
 
 namespace {
 
+using binaryTestTypes::AIMsgID;
+using binaryTestTypes::FVec3;
 using binaryTestTypes::NestedSequence;
 using binaryTestTypes::Plain;
+using binaryTestTypes::PlayerReadyHeader;
+using binaryTestTypes::PlayerReadyPacket;
+using binaryTestTypes::ProcPathPacket;
 using binaryTestTypes::Record;
+using binaryTestTypes::SessionIdentityHeader;
+using binaryTestTypes::SessionIdentityPacket;
+using binaryTestTypes::SessionIdentityType;
 using binaryTestTypes::Views;
 
 static_assert(rfl::BinaryPackable<Plain>);
 static_assert(rfl::BinaryPackable<Record>);
+static_assert(rfl::BinaryPackable<SessionIdentityPacket>);
+static_assert(rfl::BinaryPackable<PlayerReadyPacket>);
+static_assert(rfl::BinaryPackable<ProcPathPacket>);
 static_assert(!rfl::BinaryPackable<int*>);
+static_assert(!rfl::BinaryPackable<binaryTestTypes::PointerMember>);
+static_assert(!rfl::BinaryPackable<binaryTestTypes::PointerArray>);
+static_assert(!rfl::BinaryPackable<binaryTestTypes::DynamicPointerMember>);
+static_assert(!rfl::BinaryPackable<std::vector<int*>>);
+static_assert(!rfl::BinaryPackable<int Plain::*>);
+static_assert(rfl::BinaryPackable<binaryTestTypes::FixedArrays>);
+static_assert(rfl::BinaryPackable<binaryTestTypes::DynamicArrays>);
+static_assert(rfl::BinaryPackable<std::vector<bool>>);
+static_assert(rfl::binDetail::isPlainTypeV<binaryTestTypes::FixedArrays>);
+static_assert(!rfl::binDetail::isPlainTypeV<binaryTestTypes::DynamicArrays>);
 static_assert(rfl::BinaryTransactionalUnpackable<Record>);
+static_assert(sizeof(SessionIdentityHeader) == 6);
+static_assert(sizeof(PlayerReadyHeader) == 6);
+static_assert(sizeof(SessionIdentityPacket) == 14);
+static_assert(sizeof(PlayerReadyPacket) == 18);
 
 template <rfl::BinaryPackable T>
 std::vector<std::byte> encode(const T& value)
@@ -59,6 +195,22 @@ std::vector<std::byte> encode(const T& value)
     const auto result = rfl::pack(value, std::span<std::byte>(output));
     assert(result.complete());
     return output;
+}
+
+template <rfl::BinaryPackable T>
+void assertBufferRoundTrip(const T& source)
+{
+    const T beforeSerialization = source;
+    const auto size = rfl::packSize(beforeSerialization);
+    assert(size);
+
+    std::vector<std::byte> buffer(*size);
+    const auto packResult = rfl::pack(beforeSerialization, buffer);
+    assert(packResult.complete());
+
+    T afterDeserialization{};
+    assert(rfl::unpack(buffer, afterDeserialization));
+    assert(afterDeserialization == beforeSerialization);
 }
 
 void testLengthPrefixes()
@@ -106,6 +258,26 @@ void testPlainAndVariableRoundTrip()
     assert(decoded.entries[2].id == source.entries[2].id);
     assert(decoded.entries[2].value == source.entries[2].value);
     assert(decoded.fixed == source.fixed);
+}
+
+void testProtocolFixedMessages()
+{
+    const SessionIdentityPacket identity{
+        {AIMsgID::SessionIdentity, 8},
+        {0x41535649, 1, SessionIdentityType::MapExplore, 0}};
+    assertBufferRoundTrip(identity);
+
+    const PlayerReadyPacket ready{
+        {AIMsgID::PlayerReady, 12}, {0x1122334455667788ull, 2468}};
+    assertBufferRoundTrip(ready);
+}
+
+void testProtocolPathMessage()
+{
+    const ProcPathPacket source{
+        {AIMsgID::ProcPath, 38},
+        {{1.5f, -2.0f, 3.25f}, {4.0f, 5.5f, -6.75f}, {7.0f, 8.0f, 9.0f}}};
+    assertBufferRoundTrip(source);
 }
 
 void testViewUnpackAndAlignment()
@@ -160,12 +332,46 @@ void testInvalidPayloadIsTransactional()
     assert(text == "safe");
 }
 
+void testFixedAndDynamicArrays()
+{
+    binaryTestTypes::FixedArrays fixed{};
+    fixed.name[0] = 'A';
+    fixed.name[95] = 'Z';
+    fixed.matrix[1][2] = 42;
+    fixed.entries[1] = {7, -8};
+    const auto fixedBytes = encode(fixed);
+    assert(fixedBytes.size() == sizeof(fixed));
+    assert(std::memcmp(fixedBytes.data(), &fixed, sizeof(fixed)) == 0);
+    binaryTestTypes::FixedArrays decodedFixed{};
+    assert(rfl::unpack(fixedBytes, decodedFixed));
+    assert(decodedFixed.name[95] == 'Z' && decodedFixed.matrix[1][2] == 42);
+    assert(decodedFixed.entries[1].value == -8);
+
+    const binaryTestTypes::DynamicArrays dynamic{fixed, {fixed, fixed}, {"first", "second"}};
+    const auto dynamicBytes = encode(dynamic);
+    assert(std::memcmp(dynamicBytes.data(), &fixed, sizeof(fixed)) == 0);
+    binaryTestTypes::DynamicArrays decoded{};
+    assert(rfl::unpack(dynamicBytes, decoded));
+    assert(decoded.header.matrix[1][2] == 42);
+    assert(decoded.entries.size() == 2 && decoded.entries[1].name[95] == 'Z');
+    assert(decoded.labels[0] == "first" && decoded.labels[1] == "second");
+
+    const std::vector<bool> flags{true, false, true, true, false};
+    const auto flagsBytes = encode(flags);
+    assert(flagsBytes.size() == 1 + flags.size() * sizeof(bool));
+    std::vector<bool> decodedFlags;
+    assert(rfl::unpack(flagsBytes, decodedFlags) && decodedFlags == flags);
+}
+
 } // namespace
 
 int main()
 {
+    testFixedAndDynamicArrays();
     testLengthPrefixes();
     testPlainAndVariableRoundTrip();
+    testProtocolFixedMessages();
+    testProtocolPathMessage();
     testViewUnpackAndAlignment();
     testNestedVariableContainers();
     testInvalidPayloadIsTransactional();

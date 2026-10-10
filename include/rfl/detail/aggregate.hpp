@@ -65,7 +65,7 @@ struct universal_initializer {
 template <class T, std::size_t... Index>
 consteval bool aggregate_initializable_impl(std::index_sequence<Index...>) {
     return requires {
-        T{(static_cast<void>(Index), universal_initializer{})...};
+        T{{(static_cast<void>(Index), universal_initializer{})}...};
     };
 }
 
@@ -253,7 +253,7 @@ consteval std::string_view trailing_identifier(std::string_view expression) {
 
 template <class Owner, auto Address>
 consteval std::string_view member_name_signature() noexcept {
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
     constexpr std::string_view signature = __FUNCSIG__;
     constexpr std::string_view prefix = "member_name_signature<";
     constexpr auto begin = signature.find(prefix);
@@ -263,7 +263,7 @@ consteval std::string_view member_name_signature() noexcept {
                   "rfl::meta could not parse the MSVC member signature.");
     return signature.substr(begin + prefix.size(),
                             end - begin - prefix.size());
-#elif defined(__GNUC__)
+#elif defined(__clang__) || defined(__GNUC__)
     constexpr std::string_view signature = __PRETTY_FUNCTION__;
     constexpr std::string_view prefix = "Address = ";
     constexpr auto begin = signature.find(prefix);

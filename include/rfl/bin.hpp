@@ -34,6 +34,11 @@ namespace rfl {
 // endian and native ABI: peers must agree on byte order, scalar representation,
 // compiler ABI, and the definitions of packed plain structs.
 
+// Specialize only for audited native-layout types, including unions/bit-fields.
+// The application is responsible for excluding pointers and agreeing on the ABI.
+template <class T>
+inline constexpr bool enable_native_binary = false;
+
 struct BinaryPackResult {
     std::size_t writtenBytes{};
     std::size_t requiredBytes{};
@@ -89,6 +94,12 @@ struct ArrayTraits : std::false_type {
 
 template <class T, std::size_t Size>
 struct ArrayTraits<std::array<T, Size>> : std::true_type {
+    using ValueType = T;
+    static constexpr std::size_t size = Size;
+};
+
+template <class T, std::size_t Size>
+struct ArrayTraits<T[Size]> : std::true_type {
     using ValueType = T;
     static constexpr std::size_t size = Size;
 };
@@ -176,17 +187,24 @@ template <class T>
 consteval bool isPlainType()
 {
     using ValueType = ObjectType<T>;
-    if constexpr (isDirectPlain<ValueType>)
+    if constexpr (std::is_pointer_v<ValueType> ||
+                  std::is_member_pointer_v<ValueType> || std::is_reference_v<T>)
+    {
+        return false;
+    }
+    else if constexpr (enable_native_binary<ValueType>)
+    {
+        static_assert(std::is_trivially_copyable_v<ValueType>,
+                      "Native binary opt-in requires a trivially copyable type.");
+        return true;
+    }
+    else if constexpr (isDirectPlain<ValueType>)
     {
         return true;
     }
     else if constexpr (isArray<ValueType>)
     {
         return isPlainType<typename ArrayTraits<ValueType>::ValueType>();
-    }
-    else if constexpr (std::is_pointer_v<ValueType> || std::is_reference_v<T>)
-    {
-        return false;
     }
     else
     {
@@ -491,11 +509,29 @@ bool packSequence(PackWriter& writer, const T& sequence)
         {
             return false;
         }
-        for (const auto& item : sequence)
+        if constexpr (isVector<T> && std::same_as<ElementType, bool>)
         {
-            if (!packPlain(writer, item, false))
+            for (const bool item : sequence)
             {
-                return false;
+                if (!packPlain(writer, item, false))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        else if constexpr (isVector<T> || isSpan<T>)
+        {
+            return writer.write(std::as_bytes(std::span(sequence.data(), sequence.size())));
+        }
+        else
+        {
+            for (const auto& item : sequence)
+            {
+                if (!packPlain(writer, item, false))
+                {
+                    return false;
+                }
             }
         }
     }
@@ -582,7 +618,23 @@ bool unpackSequence(UnpackReader& reader, T& sequence)
             return false;
         }
         sequence.resize(count);
-        return reader.read(sequence.data(), count * sizeof(ElementType));
+        if constexpr (std::same_as<ElementType, bool>)
+        {
+            for (std::size_t index = 0; index != count; ++index)
+            {
+                bool item{};
+                if (!unpackPlain(reader, item, false))
+                {
+                    return false;
+                }
+                sequence[index] = item;
+            }
+            return true;
+        }
+        else
+        {
+            return reader.read(sequence.data(), count * sizeof(ElementType));
+        }
     }
     else
     {
@@ -778,6 +830,10 @@ concept BinaryTransactionalUnpackable =
 template <BinaryPackable T>
 [[nodiscard]] std::optional<std::size_t> packSize(const T& value) noexcept
 {
+    if constexpr (binDetail::isPlainTypeV<T>)
+    {
+        return sizeof(T);
+    }
     binDetail::PackWriter writer(std::span<std::byte>{});
     if (!binDetail::packValue(writer, value, binDetail::isPlainTypeV<T>) )
     {
@@ -805,6 +861,15 @@ template <BinaryPackable T>
 template <BinaryTransactionalUnpackable T>
 [[nodiscard]] bool unpack(std::span<const std::byte> input, T& value)
 {
+    if constexpr (binDetail::isPlainTypeV<T>)
+    {
+        if (input.size() != sizeof(T))
+        {
+            return false;
+        }
+        std::memcpy(std::addressof(value), input.data(), sizeof(T));
+        return true;
+    }
     std::remove_cvref_t<T> parsed{};
     binDetail::UnpackReader reader(input);
     if (!binDetail::unpackValue(reader, parsed, binDetail::isPlainTypeV<T>) ||
