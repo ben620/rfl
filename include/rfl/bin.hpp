@@ -25,16 +25,16 @@ namespace rfl {
 //
 // Plain objects are copied as their native object representation after natural
 // alignment. Variable members are emitted in declaration order without a
-// structure-level header. Length prefixes use their top two bits as a size tag:
-// 00 = 1 byte (6 payload bits), 01 = 2 bytes (14 bits), 10 = 4 bytes (30 bits),
-// 11 = 8 bytes (62 bits). Lengths are element counts except string data, whose
-// length is measured in bytes.
+// structure-level header. Big-endian lengths use a high-bit size tag: 0 = two
+// bytes (15 length bits), 1 = four bytes (31 length bits). Four-byte lengths must
+// exceed 0x7fff. Lengths are element counts except strings, measured in bytes.
 //
-// This format intentionally excludes wstring and wstring_view. It is native
+// This format intentionally excludes wstring and wstring_view. Payloads use native
 // endian and native ABI: peers must agree on byte order, scalar representation,
 // compiler ABI, and the definitions of packed plain structs.
 
-// Specialize only for audited native-layout types, including unions/bit-fields.
+// Legacy opt-in for audited opaque native-layout types. Reflectable aggregates
+// still require recursive plain members. BinaryPlain never accepts opaque opt-ins.
 // The application is responsible for excluding pointers and agreeing on the ABI.
 template <class T>
 inline constexpr bool enable_native_binary = false;
@@ -155,18 +155,34 @@ inline constexpr bool isDirectPlain =
     std::is_arithmetic_v<ObjectType<T>> || std::is_enum_v<ObjectType<T>> ||
     std::same_as<ObjectType<T>, std::byte>;
 
-template <class T>
+template <class T, bool AllowNative = true>
 consteval bool isPlainType();
 
 template <class T>
 consteval bool isSerializableType();
 
 template <class T>
+consteval bool hasNativeValueLayout()
+{
+    using ValueType = ObjectType<T>;
+    if constexpr (meta::detail::registered_single_base<ValueType>)
+    {
+        using BaseType = typename meta::detail::single_base_registration<ValueType>::base_type;
+        return hasNativeValueLayout<BaseType>();
+    }
+    else
+    {
+        return std::is_standard_layout_v<ValueType>;
+    }
+}
+
+template <class T, bool AllowNative>
 consteval bool isPlainAggregate()
 {
     using ValueType = ObjectType<T>;
     if constexpr (!meta::reflectable_type<ValueType> ||
-                  !std::is_trivially_copyable_v<ValueType>)
+                  !std::is_trivially_copyable_v<ValueType> ||
+                  !hasNativeValueLayout<ValueType>())
     {
         return false;
     }
@@ -177,26 +193,22 @@ consteval bool isPlainAggregate()
                        [&]<class Member>(Member member) {
                            using FieldType = meta::reflected_type_t<
                                decltype(meta::type_of(member))>;
-                           result = result && isPlainType<FieldType>();
+                           result = result && isPlainType<FieldType, AllowNative>();
                        });
         return result;
     }
 }
 
-template <class T>
+template <class T, bool AllowNative>
 consteval bool isPlainType()
 {
     using ValueType = ObjectType<T>;
     if constexpr (std::is_pointer_v<ValueType> ||
-                  std::is_member_pointer_v<ValueType> || std::is_reference_v<T>)
+                  std::is_member_pointer_v<ValueType> || std::is_reference_v<T> ||
+                  isString<ValueType> || isStringView<ValueType> ||
+                  isVector<ValueType> || isList<ValueType> || isSpan<ValueType>)
     {
         return false;
-    }
-    else if constexpr (enable_native_binary<ValueType>)
-    {
-        static_assert(std::is_trivially_copyable_v<ValueType>,
-                      "Native binary opt-in requires a trivially copyable type.");
-        return true;
     }
     else if constexpr (isDirectPlain<ValueType>)
     {
@@ -204,11 +216,21 @@ consteval bool isPlainType()
     }
     else if constexpr (isArray<ValueType>)
     {
-        return isPlainType<typename ArrayTraits<ValueType>::ValueType>();
+        return isPlainType<typename ArrayTraits<ValueType>::ValueType, AllowNative>();
+    }
+    else if constexpr (meta::reflectable_type<ValueType>)
+    {
+        return isPlainAggregate<ValueType, AllowNative>();
+    }
+    else if constexpr (AllowNative && enable_native_binary<ValueType>)
+    {
+        static_assert(std::is_trivially_copyable_v<ValueType>,
+                      "Native binary opt-in requires a trivially copyable type.");
+        return true;
     }
     else
     {
-        return isPlainAggregate<ValueType>();
+        return false;
     }
 }
 
@@ -216,7 +238,8 @@ template <class T>
 consteval bool isSerializableAggregate()
 {
     using ValueType = ObjectType<T>;
-    if constexpr (!meta::reflectable_type<ValueType>)
+    if constexpr (!meta::reflectable_type<ValueType> ||
+                  (std::is_trivially_copyable_v<ValueType> && !hasNativeValueLayout<ValueType>()))
     {
         return false;
     }
@@ -396,33 +419,13 @@ private:
 
 inline bool writeLength(PackWriter& writer, std::size_t value) noexcept
 {
-    if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t))
+    if (value > 0x7fffffffu)
     {
-        if (value > ((std::uint64_t{1} << 62) - 1))
-        {
-            return false;
-        }
+        return false;
     }
-
-    const auto length = static_cast<std::uint64_t>(value);
-    std::size_t bytes = 1;
-    std::uint8_t tag = 0;
-    if (length > 0x3f)
-    {
-        bytes = 2;
-        tag = 0x40;
-    }
-    if (length > 0x3fff)
-    {
-        bytes = 4;
-        tag = 0x80;
-    }
-    if (length > 0x3fffffff)
-    {
-        bytes = 8;
-        tag = 0xc0;
-    }
-
+    const auto length = static_cast<std::uint32_t>(value);
+    const std::size_t bytes = length <= 0x7fff ? 2 : 4;
+    const std::uint8_t tag = bytes == 2 ? 0 : 0x80;
     const auto highShift = static_cast<unsigned>((bytes - 1) * 8);
     if (!writer.writeByte(static_cast<std::byte>(tag | (length >> highShift))))
     {
@@ -441,28 +444,33 @@ inline bool writeLength(PackWriter& writer, std::size_t value) noexcept
 
 inline bool readLength(UnpackReader& reader, std::size_t& value) noexcept
 {
-    std::byte first{};
-    if (!reader.read(&first, 1))
+    const auto first = reader.view(1);
+    if (first.empty())
     {
         return false;
     }
-
-    const auto firstValue = std::to_integer<std::uint8_t>(first);
-    const auto tag = firstValue >> 6;
-    const std::size_t bytes = std::size_t{1} << tag;
-    std::uint64_t result = firstValue & 0x3f;
-    for (std::size_t index = 1; index != bytes; ++index)
+    const auto firstValue = std::to_integer<std::uint8_t>(first.front());
+    const std::size_t bytes = (firstValue & 0x80) == 0 ? 2 : 4;
+    const auto tail = reader.view(bytes - 1);
+    if (tail.size() != bytes - 1)
     {
-        std::byte next{};
-        if (!reader.read(&next, 1))
+        return false;
+    }
+    std::uint32_t result = firstValue & 0x7f;
+    for (const auto next : tail)
+    {
+        result = (result << 8) | std::to_integer<std::uint8_t>(next);
+    }
+    if (bytes == 4 && result <= 0x7fff)
+    {
+        return false;
+    }
+    if constexpr (sizeof(std::size_t) < sizeof(std::uint32_t))
+    {
+        if (result > (std::numeric_limits<std::size_t>::max)())
         {
             return false;
         }
-        result = (result << 8) | std::to_integer<std::uint8_t>(next);
-    }
-    if (result > (std::numeric_limits<std::size_t>::max)())
-    {
-        return false;
     }
     value = static_cast<std::size_t>(result);
     return true;
@@ -498,7 +506,8 @@ template <class T>
 bool packSequence(PackWriter& writer, const T& sequence)
 {
     using ElementType = SequenceElementType<T>;
-    if (!writeLength(writer, sequence.size()))
+    if (sequence.size() > (std::numeric_limits<std::size_t>::max)() / sizeof(ElementType) ||
+        !writeLength(writer, sequence.size()))
     {
         return false;
     }
@@ -817,7 +826,162 @@ bool unpackValue(UnpackReader& reader, T& value, bool naturallyAligned)
     }
 }
 
+template <class T>
+consteval std::size_t minimumPackedSize()
+{
+    using ValueType = ObjectType<T>;
+    constexpr auto maximum = (std::numeric_limits<std::size_t>::max)();
+    if constexpr (isPlainTypeV<ValueType>)
+    {
+        return sizeof(ValueType);
+    }
+    else if constexpr (isString<ValueType> || isStringView<ValueType> ||
+                       isVector<ValueType> || isList<ValueType> || isSpan<ValueType>)
+    {
+        return 2;
+    }
+    else if constexpr (isArray<ValueType>)
+    {
+        constexpr auto size = minimumPackedSize<typename ArrayTraits<ValueType>::ValueType>();
+        constexpr auto count = ArrayTraits<ValueType>::size;
+        if constexpr (size != 0 && count > maximum / size)
+        {
+            return maximum;
+        }
+        return count * size;
+    }
+    else
+    {
+        std::size_t result{};
+        meta::for_each(meta::nonstatic_data_members_of(meta::reflect<ValueType>()),
+                       [&]<class Member>(Member member) {
+                           using FieldType = meta::reflected_type_t<
+                               decltype(meta::type_of(member))>;
+                           constexpr auto size = minimumPackedSize<FieldType>();
+                           result = size > maximum - result ? maximum : result + size;
+                       });
+        return result;
+    }
+}
+
+template <class T>
+bool validateValue(UnpackReader& reader, bool naturallyAligned) noexcept;
+
+template <class T>
+bool validateSequence(UnpackReader& reader) noexcept
+{
+    using ValueType = ObjectType<T>;
+    using ElementType = SequenceElementType<ValueType>;
+    std::size_t count{};
+    if (!readLength(reader, count) ||
+        count > (std::numeric_limits<std::size_t>::max)() / sizeof(ElementType))
+    {
+        return false;
+    }
+    if constexpr (isSpan<ValueType>)
+    {
+        constexpr auto extent = SpanTraits<ValueType>::extent;
+        if constexpr (extent != std::dynamic_extent)
+        {
+            if (count != extent)
+            {
+                return false;
+            }
+        }
+    }
+    if constexpr (isPlainTypeV<ElementType>)
+    {
+        if (!reader.align(alignof(ElementType)) ||
+            count > reader.remaining() / sizeof(ElementType))
+        {
+            return false;
+        }
+        if constexpr (isSpan<ValueType>)
+        {
+            const auto bytes = reader.view(count * sizeof(ElementType));
+            const auto address = reinterpret_cast<std::uintptr_t>(bytes.data());
+            return (address & (alignof(ElementType) - 1)) == 0;
+        }
+        return reader.skip(count * sizeof(ElementType));
+    }
+    else
+    {
+        constexpr auto minimum = minimumPackedSize<ElementType>();
+        if constexpr (minimum == 0)
+        {
+            return true;
+        }
+        else
+        {
+            if (count > reader.remaining() / minimum)
+            {
+                return false;
+            }
+            for (std::size_t index = 0; index != count; ++index)
+            {
+                if (!validateValue<ElementType>(reader, false))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+}
+
+template <class T>
+bool validateValue(UnpackReader& reader, bool naturallyAligned) noexcept
+{
+    using ValueType = ObjectType<T>;
+    if constexpr (isPlainTypeV<ValueType>)
+    {
+        return (!naturallyAligned || reader.align(alignof(ValueType))) &&
+               reader.skip(sizeof(ValueType));
+    }
+    else if constexpr (isString<ValueType> || isStringView<ValueType>)
+    {
+        std::size_t size{};
+        return readLength(reader, size) && reader.skip(size);
+    }
+    else if constexpr (isVector<ValueType> || isList<ValueType> || isSpan<ValueType>)
+    {
+        return validateSequence<ValueType>(reader);
+    }
+    else if constexpr (isArray<ValueType>)
+    {
+        using ElementType = typename ArrayTraits<ValueType>::ValueType;
+        if constexpr (minimumPackedSize<ElementType>() != 0)
+        {
+            for (std::size_t index = 0; index != ArrayTraits<ValueType>::size; ++index)
+            {
+                if (!validateValue<ElementType>(reader, isPlainTypeV<ElementType>))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    else
+    {
+        bool success = true;
+        meta::for_each(meta::nonstatic_data_members_of(meta::reflect<ValueType>()),
+                       [&]<class Member>(Member member) {
+                           using FieldType = meta::reflected_type_t<
+                               decltype(meta::type_of(member))>;
+                           if (success)
+                           {
+                               success = validateValue<FieldType>(reader, isPlainTypeV<FieldType>);
+                           }
+                       });
+        return success;
+    }
+}
+
 } // namespace binDetail
+
+template <class T>
+concept BinaryPlain = binDetail::isPlainType<T, false>();
 
 template <class T>
 concept BinaryPackable = binDetail::isSerializableTypeV<T>;
@@ -879,6 +1043,16 @@ template <BinaryTransactionalUnpackable T>
     }
     value = std::move(parsed);
     return true;
+}
+
+// Checks structure and exact consumption without constructing T or copying payloads.
+// Native scalar representations and padding bytes are not semantically validated.
+template <BinaryPackable T>
+[[nodiscard]] bool validate(std::span<const std::byte> input) noexcept
+{
+    binDetail::UnpackReader reader(input);
+    return binDetail::validateValue<T>(reader, binDetail::isPlainTypeV<T>) &&
+           reader.finished();
 }
 
 template <BinaryPackable T>
