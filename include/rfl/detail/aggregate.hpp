@@ -57,8 +57,24 @@ struct member_pointer_traits<Value Owner::*> {
     using owner_type = Owner;
 };
 
+// Every member is initialized from its own braced list, so no brace elision happens and the count
+// stays exact even for members that are arrays or aggregates.
 struct universal_initializer {
     template <class T>
+        requires(!std::is_pointer_v<T> && !std::is_member_pointer_v<T> &&
+                 !std::is_null_pointer_v<T>)
+    constexpr operator T() const noexcept;
+};
+
+// A member of type std::string_view is copy-list-initialized from {universal_initializer{}}. GCC
+// also considers std::string_view(std::nullptr_t) and std::string_view(const char*) and reports the
+// conversion as ambiguous, so every aggregate holding a text field (TextMessage) counted one member,
+// which then broke the structured binding in tie_members. Excluding pointer conversions leaves the
+// copy constructor as the only candidate; aggregates that do have pointer members are counted with
+// pointer_initializer, which converts to pointers only and is likewise never ambiguous.
+struct pointer_initializer {
+    template <class T>
+        requires(std::is_pointer_v<T> || std::is_member_pointer_v<T>)
     constexpr operator T() const noexcept;
 };
 
@@ -66,6 +82,8 @@ template <class T, std::size_t... Index>
 consteval bool aggregate_initializable_impl(std::index_sequence<Index...>) {
     return requires {
         T{{(static_cast<void>(Index), universal_initializer{})}...};
+    } || requires {
+        T{{(static_cast<void>(Index), pointer_initializer{})}...};
     };
 }
 
